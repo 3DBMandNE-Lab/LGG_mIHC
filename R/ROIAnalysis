@@ -1,0 +1,459 @@
+#!/usr/bin/env Rscript
+#
+# This script performs spatial network analysis on glioma immune cell data.
+# It reads processed data, computes a fixed global layout for cell types,
+# calculates pairwise distances between cells within multiple small subregions 
+# (150×150 µm boxes) in each image (to capture local heterogeneity), aggregates 
+# these metrics across subregions and images by condition (defined by hypoxia 
+# and IDH status), constructs network plots, and generates supplementary 
+# visualizations (heatmaps, violin plots) of the aggregated distance metrics.
+#
+# Dependencies: tidyverse, ggnetwork, igraph, ggraph, tidygraph, circlize,
+#               ggforce, readxl, reshape2, pheatmap
+#
+# Usage: Adjust the file paths as needed and run the script.
+#
+
+# --- 1. Load Required Libraries ---
+library(tidyverse)    # For data manipulation (dplyr, ggplot2, readr, etc.)
+library(ggnetwork)    # For converting network objects for plotting.
+library(igraph)       # For network analysis.
+library(ggraph)       # For network visualization.
+library(tidygraph)    # Tidy approach to graph handling (optional).
+library(circlize)     # For chord diagram plotting and circular layouts.
+library(ggforce)      # For additional visualizations (e.g., convex hulls).
+library(readxl)       # For reading Excel files.
+library(reshape2)     # For reshaping data.
+library(pheatmap)     # For heatmap visualization.
+
+# --- 2. Read and Merge Data ---
+# Read sample information from an Excel file.
+Sample_Info <- read_excel("Data/SampleInfo.xlsx")
+
+# Read processed cell-level data (RDS file) containing combined measurements.
+combined_data <- readRDS("Data/Processed/Combined.RDS")
+
+# Filter for images representing either 'Astrocytoma_Diffuse' or 'GBM' tumors, and add a new column 'IDH_Status'
+all_gbm_data <- combined_data %>%
+  filter(Image %in% subset(Sample_Info, Tumor %in% c("Astrocytoma_Diffuse", "GBM"))$Image) %>%
+  mutate(IDH_Status = case_when(
+    Image %in% subset(Sample_Info, Tumor == "Astrocytoma_Diffuse")$Image ~ "IDHmut",
+    Image %in% subset(Sample_Info, Tumor == "GBM")$Image ~ "IDHwt"
+  ))
+
+# Create a unique identifier combining TMA and Image.
+all_gbm_data$Identifier <- paste0(all_gbm_data$TMA, "_", all_gbm_data$Image)
+
+# --- 3. Compute a Global Layout for Cell Types ---
+global_cell_types <- unique(all_gbm_data$Classification)
+global_nodes <- data.frame(
+  name = global_cell_types,
+  label = global_cell_types,
+  stringsAsFactors = FALSE
+)
+
+empty_edges <- data.frame(
+  from = character(0),
+  to = character(0),
+  stringsAsFactors = FALSE
+)
+
+global_graph <- graph_from_data_frame(d = empty_edges, vertices = global_nodes)
+global_layout_df <- create_layout(global_graph, layout = "fr")
+
+# --- 4. Define Functions ---
+
+# 4a. compute_avg_distances(): 
+# This function calculates the median and standard deviation of pairwise Euclidean distances
+# between cells belonging to each pair of cell types within a given data frame.
+compute_avg_distances <- function(df,
+                                  x_col = "Centroid X µm",
+                                  y_col = "Centroid Y µm",
+                                  class_col = "Classification",
+                                  max_pairs = 1e6) {
+  cell_types <- unique(df[[class_col]])
+  results_list <- list()
+  
+  for (ct1 in cell_types) {
+    for (ct2 in cell_types) {
+      A <- df %>% 
+        filter(.data[[class_col]] == ct1) %>% 
+        dplyr::select(all_of(x_col), all_of(y_col)) %>% as.matrix()
+      B <- df %>% 
+        filter(.data[[class_col]] == ct2) %>% 
+        dplyr::select(all_of(x_col), all_of(y_col)) %>% as.matrix()
+      
+      if (nrow(A) == 0 || nrow(B) == 0) {
+        results_list[[length(results_list) + 1]] <- data.frame(
+          cell_type_1 = ct1,
+          cell_type_2 = ct2,
+          mean_dist = NA,
+          sd_dist = NA,
+          stringsAsFactors = FALSE
+        )
+        next
+      }
+      
+      if (ct1 == ct2) {
+        if(nrow(A) < 2) {
+          results_list[[length(results_list) + 1]] <- data.frame(
+            cell_type_1 = ct1,
+            cell_type_2 = ct2,
+            mean_dist = NA,
+            sd_dist = NA,
+            stringsAsFactors = FALSE
+          )
+          next
+        }
+        total_pairs <- choose(nrow(A), 2)
+        if (is.na(total_pairs)) total_pairs <- Inf
+        if (total_pairs > max_pairs) {
+          sample_n <- max_pairs
+          idx1 <- sample(seq_len(nrow(A)), sample_n, replace = TRUE)
+          idx2 <- sample(seq_len(nrow(A)), sample_n, replace = TRUE)
+          dists <- sqrt((A[idx1, 1] - A[idx2, 1])^2 +
+                          (A[idx1, 2] - A[idx2, 2])^2)
+        } else {
+          dist_mat <- as.matrix(dist(A))
+          dists <- dist_mat[upper.tri(dist_mat)]
+        }
+      } else {
+        total_pairs <- nrow(A) * nrow(B)
+        if (is.na(total_pairs)) total_pairs <- Inf
+        if (total_pairs > max_pairs) {
+          sample_n <- max_pairs
+          idxA <- sample(seq_len(nrow(A)), sample_n, replace = TRUE)
+          idxB <- sample(seq_len(nrow(B)), sample_n, replace = TRUE)
+          dists <- sqrt((A[idxA, 1] - B[idxB, 1])^2 +
+                          (A[idxA, 2] - B[idxB, 2])^2)
+        } else {
+          A_sq <- rowSums(A^2)
+          B_sq <- rowSums(B^2)
+          dist_sq <- outer(A_sq, B_sq, "+") - 2 * (A %*% t(B))
+          dist_sq[dist_sq < 0] <- 0
+          dists <- sqrt(as.vector(dist_sq))
+        }
+      }
+      
+      results_list[[length(results_list) + 1]] <- data.frame(
+        cell_type_1 = ct1,
+        cell_type_2 = ct2,
+        mean_dist = median(dists, na.rm = TRUE),
+        sd_dist = sd(dists, na.rm = TRUE),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  bind_rows(results_list)
+}
+
+# 4b. compute_image_subregion_metrics():
+# For a given image's data, this function randomly samples a specified number of
+# subregions (boxes of fixed size) and computes the aggregated (median) pairwise distance
+# metrics across the subregions.
+compute_image_subregion_metrics <- function(df_img, n_boxes = 20, box_size = 150) {
+  # Determine the overall coordinate ranges in the image.
+  x_range <- range(df_img[["Centroid X µm"]], na.rm = TRUE)
+  y_range <- range(df_img[["Centroid Y µm"]], na.rm = TRUE)
+  
+  sub_results_list <- list()
+  
+  # For reproducibility, set a seed here if desired.
+  set.seed(123)
+  
+  for(i in 1:n_boxes) {
+    x0 <- runif(1, min = x_range[1], max = x_range[2] - box_size)
+    y0 <- runif(1, min = y_range[1], max = y_range[2] - box_size)
+    sub_df <- df_img %>% 
+      filter(`Centroid X µm` >= x0, `Centroid X µm` <= x0 + box_size,
+             `Centroid Y µm` >= y0, `Centroid Y µm` <= y0 + box_size)
+    # Skip subregion if there are too few cells.
+    if(nrow(sub_df) < 10) next
+    sub_results <- compute_avg_distances(sub_df)
+    sub_results$box <- i
+    sub_results_list[[i]] <- sub_results
+  }
+  
+  if(length(sub_results_list) == 0) return(NULL)
+  
+  combined_sub_results <- bind_rows(sub_results_list)
+  # Aggregate metrics across the boxes for each cell type pair.
+  agg_results <- combined_sub_results %>%
+    group_by(cell_type_1, cell_type_2) %>%
+    summarize(mean_dist = median(mean_dist, na.rm = TRUE),
+              sd_dist = median(sd_dist, na.rm = TRUE)) %>%
+    ungroup()
+  return(agg_results)
+}
+
+# 4c. create_network_plot():
+# Constructs a network plot using aggregated distance metrics.
+create_network_plot <- function(dist_results,
+                                region_label,
+                                idh_label,
+                                invert_dist = FALSE,
+                                global_layout = NULL,
+                                annotation_text = NULL) {
+  edges <- dist_results %>%
+    filter(!is.na(mean_dist)) %>%
+    filter(cell_type_1 != cell_type_2)
+  
+  tiny_epsilon <- 1e-5
+  if (invert_dist) {
+    edges <- edges %>% mutate(weight = 1 / (mean_dist + tiny_epsilon))
+    edge_label_title <- "1 / Mean Dist"
+  } else {
+    edges <- edges %>% mutate(weight = mean_dist)
+    edge_label_title <- "Mean Dist"
+  }
+  
+  g <- graph_from_data_frame(d = edges, directed = FALSE)
+  if (!is.null(global_layout)) {
+    node_positions <- global_layout %>% filter(name %in% V(g)$name)
+    node_positions <- node_positions[match(V(g)$name, node_positions$name), ]
+    V(g)$x <- node_positions$x
+    V(g)$y <- node_positions$y
+  }
+  
+  abbr_map <- c("Macrophage" = "M1_mac",
+                "Microglia"   = "M2_mic",
+                "DendriticCell" = "DC")
+  V(g)$abbrev <- ifelse(V(g)$name %in% names(abbr_map),
+                        abbr_map[V(g)$name],
+                        V(g)$name)
+  
+  clust <- cluster_louvain(g)
+  V(g)$cluster <- as.factor(membership(clust))
+  
+  if (!is.null(global_layout)) {
+    p <- ggraph(g, layout = "manual", x = V(g)$x, y = V(g)$y)
+  } else {
+    p <- ggraph(g, layout = "fr")
+  }
+  
+  p <- p + geom_edge_link(aes(width = weight, color = weight),
+                          show.legend = TRUE, alpha = 0.8)
+  
+  top_edges <- edges %>% arrange(mean_dist) %>% head(3)
+  if(nrow(top_edges) > 0) {
+    vertex_pos <- data.frame(name = V(g)$name, x = V(g)$x, y = V(g)$y, stringsAsFactors = FALSE)
+    top_edges <- top_edges %>%
+      rename(from = cell_type_1, to = cell_type_2) %>%
+      left_join(vertex_pos, by = c("from" = "name")) %>%
+      rename(x_from = x, y_from = y) %>%
+      left_join(vertex_pos, by = c("to" = "name")) %>%
+      rename(x_to = x, y_to = y) %>%
+      mutate(mid_x = (x_from + x_to) / 2,
+             mid_y = (y_from + y_to) / 2)
+    
+    p <- p + geom_text(data = top_edges,
+                       aes(x = mid_x, y = mid_y, label = round(mean_dist, 1)),
+                       size = 4, color = "black")
+  }
+  
+  cluster_df <- data.frame(name = V(g)$name, x = V(g)$x, y = V(g)$y, cluster = V(g)$cluster)
+  hull_cluster_df <- cluster_df %>% 
+    group_by(cluster) %>% 
+    filter(n() >= 3) %>% 
+    slice(chull(x, y))
+  if(nrow(hull_cluster_df) > 0){
+    p <- p + geom_polygon(data = hull_cluster_df,
+                          aes(x = x, y = y, group = cluster),
+                          fill = NA, color = "black", linetype = "dashed",
+                          inherit.aes = FALSE)
+  }
+  
+  p <- p + geom_node_point(fill = "lightgray", size = 5, shape = 21, color = "black") +
+    geom_node_text(aes(label = abbrev), repel = TRUE, size = 6, family = "sans") +
+    scale_edge_width(trans = "reverse", range = c(1, 6), name = edge_label_title) +
+    scale_edge_color_gradient(trans = "reverse", low = "lightblue", high = "red", name = edge_label_title) +
+    labs(title = paste("Network of Cell Types by Average Distance\nRegion:", region_label, "| IDH:", idh_label)) +
+    theme_graph(base_size = 14, base_family = "sans") +
+    theme(legend.position = "right")
+  
+  if (!is.null(annotation_text)) {
+    x_annot <- max(V(g)$x, na.rm = TRUE)
+    y_annot <- max(V(g)$y, na.rm = TRUE)
+    p <- p + annotate("label", x = x_annot, y = y_annot,
+                      label = annotation_text, size = 3,
+                      fill = "white", color = "black")
+  }
+  
+  p
+}
+
+# 4d. compute_raw_distances():
+# Computes the Euclidean distances between cells of two specified cell types.
+compute_raw_distances <- function(df, celltype1, celltype2,
+                                  x_col = "Centroid X µm",
+                                  y_col = "Centroid Y µm",
+                                  class_col = "Classification",
+                                  sample_size = 100) {
+  A <- df %>% filter(.data[[class_col]] == celltype1) %>%
+    dplyr::select(all_of(x_col), all_of(y_col)) %>% as.matrix()
+  B <- df %>% filter(.data[[class_col]] == celltype2) %>%
+    dplyr::select(all_of(x_col), all_of(y_col)) %>% as.matrix()
+  
+  if(nrow(A) > sample_size) {
+    A <- A[sample(seq_len(nrow(A)), sample_size), , drop = FALSE]
+  }
+  if(nrow(B) > sample_size) {
+    B <- B[sample(seq_len(nrow(B)), sample_size), , drop = FALSE]
+  }
+  
+  if(celltype1 == celltype2) {
+    if(nrow(A) < 2) return(numeric(0))
+    dist_mat <- as.matrix(dist(A))
+    dist_vals <- dist_mat[upper.tri(dist_mat)]
+  } else {
+    dist_vals <- sqrt((outer(A[,1], B[,1], "-")^2) +
+                        (outer(A[,2], B[,2], "-")^2))
+    dist_vals <- as.vector(dist_vals)
+  }
+  dist_vals
+}
+
+# --- 5. Main Execution Block ---
+# Instead of computing distances over the entire image, we now sample multiple (e.g., 20)
+# random 150×150 µm boxes within each image to capture local heterogeneity.
+all_chord_results <- list()
+unique_regions <- unique(all_gbm_data$Parent)
+unique_idh <- unique(all_gbm_data$IDH_Status)
+
+for (this_region in unique_regions) {
+  for (this_idh in unique_idh) {
+    # Subset data for the condition.
+    df_sub <- all_gbm_data %>% filter(Parent == this_region, IDH_Status == this_idh)
+    if(nrow(df_sub) == 0) next
+    
+    image_list <- unique(df_sub$Identifier)
+    dist_results_list <- list()
+    
+    for (img in image_list) {
+      df_img <- df_sub %>% filter(Identifier == img)
+      # Skip image if there are too few cells.
+      if(nrow(df_img) < 20) next
+      
+      # For each image, compute aggregated distance metrics from 20 random subregions.
+      agg_results <- compute_image_subregion_metrics(df_img, n_boxes = 20, box_size = 200)
+      if(!is.null(agg_results)) {
+        agg_results$Identifier <- img
+        dist_results_list[[img]] <- agg_results
+      }
+    }
+    
+    if(length(dist_results_list) == 0) next
+    
+    dist_results_combined <- bind_rows(dist_results_list)
+    # Aggregate across images for each cell type pair.
+    dist_results_aggregated <- dist_results_combined %>%
+      group_by(cell_type_1, cell_type_2) %>%
+      summarize(mean_dist = mean(mean_dist, na.rm = TRUE),
+                sd_dist = mean(sd_dist, na.rm = TRUE)) %>%
+      ungroup()
+    
+    key_name <- paste(this_region, this_idh, sep = "_")
+    all_chord_results[[key_name]] <- dist_results_aggregated
+    
+    message("\n--- Aggregated Distance Results for ", key_name, " ---")
+    print(dist_results_aggregated)
+  }
+}
+
+# --- 6. Generate Primary Network Plots ---
+pdf("plots/CellType_Distance_Networks_150um.pdf", width = 10, height = 10, family = "sans")
+for (key_name in names(all_chord_results)) {
+  parts <- unlist(strsplit(key_name, "_"))
+  if (length(parts) == 2) {
+    region_label <- parts[1]
+    idh_label <- parts[2]
+  } else if (length(parts) >= 3) {
+    region_label <- paste(parts[1:2], collapse = "_")
+    idh_label <- parts[3]
+  } else {
+    region_label <- key_name
+    idh_label <- "Unknown"
+  }
+  
+  dist_df <- all_chord_results[[key_name]]
+  plot_network <- create_network_plot(dist_df,
+                                      region_label = region_label,
+                                      idh_label = idh_label,
+                                      invert_dist = FALSE,
+                                      global_layout = global_layout_df)
+  print(plot_network)
+}
+dev.off()
+
+# --- 7. Generate Supplementary Visualizations ---
+pdf("plots/Supplementary_Visualizations_AllConditions_150um.pdf", width = 10, height = 8)
+for (key_name in names(all_chord_results)) {
+  parts <- unlist(strsplit(key_name, "_"))
+  if (length(parts) == 2) {
+    region_label <- parts[1]
+    idh_label <- parts[2]
+  } else if (length(parts) >= 3) {
+    region_label <- paste(parts[1:2], collapse = "_")
+    idh_label <- parts[3]
+  } else {
+    region_label <- key_name
+    idh_label <- "Unknown"
+  }
+  
+  df_condition <- all_gbm_data %>% filter(Parent == region_label, IDH_Status == idh_label)
+  if(nrow(df_condition) == 0) next
+  
+  dist_results <- all_chord_results[[key_name]]
+  unique_cells <- unique(c(dist_results$cell_type_1, dist_results$cell_type_2))
+  if(length(unique_cells) > 50) {
+    warning("Too many unique cell types (", length(unique_cells), "). Consider subsetting the data.")
+    next
+  }
+  
+  # 7.1 Generate Pairwise Distance Heatmap.
+  heatmap_data <- dist_results %>%
+    dplyr::select(cell_type_1, cell_type_2, mean_dist) %>%
+    pivot_wider(names_from = cell_type_2, values_from = mean_dist, values_fill = list(mean_dist = NA)) %>%
+    as.data.frame()
+  heatmap_data <- column_to_rownames(heatmap_data, var = "cell_type_1")
+  
+  pheatmap(heatmap_data, 
+           border_color = "white",
+           main = paste("Heatmap", key_name),
+           cellwidth = 15,
+           cellheight = 15,
+           scale = "none",
+           display_numbers = FALSE,
+           color = colorRampPalette(c("pink", "white", "skyblue"))(100))
+  
+  # 7.2 Generate Distance Distribution Violin/Box Plots.
+  pairs_df <- unique(dist_results[, c("cell_type_1", "cell_type_2")])
+  df_violin <- data.frame(distance = numeric(0), pair = character(0))
+  
+  for(i in 1:nrow(pairs_df)) {
+    ct1 <- as.character(pairs_df[i, "cell_type_1"])
+    ct2 <- as.character(pairs_df[i, "cell_type_2"])
+    raw_dist <- compute_raw_distances(df_condition, ct1, ct2)
+    if(length(raw_dist) > 0) {
+      temp_df <- data.frame(distance = raw_dist,
+                            pair = rep(paste(ct1, "-", ct2), length(raw_dist)),
+                            stringsAsFactors = FALSE)
+      df_violin <- rbind(df_violin, temp_df)
+    }
+  }
+  
+  if(nrow(df_violin) > 0){
+    p_violin <- ggplot(df_violin, aes(x = pair, y = distance, fill = pair)) +
+      geom_violin(trim = FALSE, alpha = 0.7) +
+      geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+      labs(title = paste("Distance Distribution for", key_name),
+           x = "Cell Pair", y = "Distance (µm)") +
+      theme_bw() +
+      theme(legend.position = "none",
+            axis.text.x = element_text(angle = 90, hjust = 1))
+    print(p_violin)
+  }
+  
+  gc() # Free up memory
+}
+dev.off()
