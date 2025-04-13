@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
-# Upload.R
+# WholeImage.R
 #
-# This script performs spatial network analysis on glioma immune cell data.
+# This script performs spatial network analysis on glioma immune cell data on whole TMA's.
 # It reads in processed data, computes a global layout for immune cell types,
 # calculates pairwise distances between cells within each image, aggregates them
 # per condition (defined by hypoxia and IDH status), constructs network graphs,
