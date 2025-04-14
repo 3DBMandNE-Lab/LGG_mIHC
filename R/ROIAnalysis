@@ -151,7 +151,7 @@ compute_avg_distances <- function(df,
 # For a given image's data, this function randomly samples a specified number of
 # subregions (boxes of fixed size) and computes the aggregated (median) pairwise distance
 # metrics across the subregions.
-compute_image_subregion_metrics <- function(df_img, n_boxes = 20, box_size = 150) {
+compute_image_subregion_metrics <- function(df_img, n_boxes = 20, box_size = 200) {
   # Determine the overall coordinate ranges in the image.
   x_range <- range(df_img[["Centroid X µm"]], na.rm = TRUE)
   y_range <- range(df_img[["Centroid Y µm"]], na.rm = TRUE)
