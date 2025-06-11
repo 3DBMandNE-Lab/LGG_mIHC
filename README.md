@@ -1,27 +1,22 @@
-![LGG_mIHC](https://img.shields.io/badge/Project-LGG_mIHC-green?style=for-the-badge&logo=R&logoColor=white)
+![R](https://img.shields.io/badge/R-4.4.0-blue)
+![Seurat](https://img.shields.io/badge/Seurat-5.0.3-blueviolet)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Status](https://img.shields.io/badge/status-Research--Collaboration-yellow)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)  
-[![Last Commit](https://img.shields.io/github/last-commit/3DBMandNE-Lab/LGG_mIHC?color=blue)](https://github.com/3DBMandNE-Lab/LGG_mIHC/commits/main)  
-[![R](https://img.shields.io/badge/Made%20with-R-1f425f.svg?logo=R&logoColor=white)](https://cran.r-project.org/)  
-[![Issues](https://img.shields.io/github/issues/3DBMandNE-Lab/LGG_mIHC)](https://github.com/3DBMandNE-Lab/LGG_mIHC/issues)
-
-# LGG_mIHC Pipeline
-
-[![Email](https://img.shields.io/badge/Email-kevin.joseph@uniklinik--freiburg.de-blue?logo=gmail)](mailto:kevin.joseph@uniklinik-freiburg.de)  
-[![ORCID](https://img.shields.io/badge/ORCID-0000--0003--0062--2099-a6ce39?logo=orcid)](https://orcid.org/0000-0003-0062-2099)  
+# Spatial Network Interactions in GBM (mIHC imaging based)
 
 ---
 
 ## Overview
 
-**LGG_mIHC** is an automated R-based pipeline to quantify and dissect **spatial network interactions** of immune and tumor cells in **low-grade gliomas (LGG)** using **multiplex immunohistochemistry (mIHC)** data.
+**LGG_mIHC** is an automated R-based pipeline to quantify and dissect **spatial network interactions** of immune and tumor cells in **low-grade** and **high grade** gliomas using **multiplex immunohistochemistry (mIHC)** data obtained from tissue microarrays.
 
 The pipeline processes raw CSV exports of **cell-level marker intensities** to produce:
 
-✅ Cell data annotated by **hypoxia** and **IDH status**  
-✅ **Sub-region (ROI) analyses** — spatial distance metrics & networks  
-✅ **Whole-image global network analyses**  
-✅ Ready-to-use **RDS objects**, **publication-ready PDFs**, and **summary tables**
+- Cell data annotated by **hypoxia**, and **cannonical cellular markers**  
+- **ROI analyses** — Spatial Distance Metrics & Networks  
+- **Whole-image global network analyses**  
+
 
 ---
 
@@ -39,21 +34,6 @@ LGG_mIHC/
 
 ---
 
-## Prerequisites
-
-- **R** version ≥ 4.0  
-- Required R packages:
-
-```r
-install.packages(c(
-  "tidyverse", "readxl", "reshape2", "ggnetwork", "igraph",
-  "ggraph", "tidygraph", "circlize", "ggforce", "pheatmap",
-  "spatstat", "EBImage", "rmarkdown"
-))
-```
-
----
-
 ## Quick Start
 
 ### Clone this repository
@@ -63,17 +43,9 @@ git clone https://github.com/3DBMandNE-Lab/LGG_mIHC.git
 cd LGG_mIHC
 ```
 
-### Configure file paths
+### Setup
 
-Edit the first lines of each R script to point to your input `data/` and desired `outputs/` directories.
-
-### Run the pipeline
-
-```bash
-Rscript DataPrep.R
-Rscript ROIAnalysis.R
-Rscript WholeImage.R
-```
+Modify each script to point to your input `data/` and desired `outputs/` directories.
 
 ### Explore results
 
@@ -90,7 +62,7 @@ Results will appear in the `outputs/` folder:
 
 ### DataPrep.R
 
-**Purpose:**  
+**Features:**  
 - Import raw CSVs of mIHC marker intensities  
 - Annotate with hypoxia status and IDH status  
 - Save merged dataset as `processed_data.rds`
@@ -104,7 +76,7 @@ Results will appear in the `outputs/` folder:
 
 ### ROIAnalysis.R
 
-**Purpose:**  
+**Features:**  
 - Divide each image into **ROIs** (default: 150 × 150 µm)  
 - Compute **pairwise distances** between selected cell types  
 - Aggregate statistics across ROIs  
@@ -119,7 +91,7 @@ Results will appear in the `outputs/` folder:
 
 ### WholeImage.R
 
-**Purpose:**  
+**Features:**  
 - Compute **global cell–cell distance networks** for whole TMA images  
 - Analyze **global interaction patterns** across hypoxia and IDH groups
 
@@ -130,28 +102,11 @@ Results will appear in the `outputs/` folder:
 
 ---
 
-## Outputs & Visualization
+## Author
 
-The pipeline produces:
-
-- **RDS** → Load in R or Shiny for further analysis  
-- **PDFs** → Network graphs and violin/boxplots suitable for publication  
-- **CSVs** → Numeric summary tables for statistical modeling or reporting
+**Kevin Joseph**  
+3DBM & NE, Neurosurgery, University Hospital Freiburg  
+Germany  
 
 ---
 
-**Note:** Always re-run `DataPrep.R` before submitting a PR to ensure consistent RDS output.
-
----
-
-## 📜 License
-
-Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.
-
----
-
-## 📫 Contact
-
-**Dr.-Ing. Kevin Joseph**
-Department of Neurosurgery, University Hospital Freiburg  
-[kevin.joseph@uniklinik-freiburg.de](mailto:kevin.joseph@uniklinik-freiburg.de)
